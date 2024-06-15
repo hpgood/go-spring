@@ -6,13 +6,13 @@ go spring 迷你版，快速依赖注入使用。常用于 DDD(Domain-Driven Des
 example:
 
     import (
-        "github.com/hpgood/go-spring/gosp"
+        "github.com/hpgood/go-spring"
         "github.com/hpgood/go-spring/simple/core"
         "github.com/hpgood/go-spring/simple/infrastruction"
     )
 
     func main() {
-        app := gosp.Spring{}
+        app := spring.NewSpring()
         app.SetDebug(true)
         app.Add(&core.Core{})
         app.Add(&infrastruction.Config{})
