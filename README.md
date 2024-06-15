@@ -12,11 +12,10 @@ example:
     )
 
     func main() {
-
-	app := gosp.Spring{}
-	app.SetDebug(true)
-	app.Add(&core.Core{})
-	app.Add(&infrastruction.Config{})
-	app.Start()
-}
+        app := gosp.Spring{}
+        app.SetDebug(true)
+        app.Add(&core.Core{})
+        app.Add(&infrastruction.Config{})
+        app.Start()
+    }
 
