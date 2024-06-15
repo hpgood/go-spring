@@ -46,6 +46,10 @@ func (t *Spring) Add(cls interface{}) {
 	if t.debug {
 		log.Println(t.logTag, "Add bean=", bean.Name())
 	}
+	old, ok := t.instances[bean.Name()]
+	if ok && old != nil {
+		log.Fatalln(t.logTag, " Error: exist old bean=", bean.Name(), "old=", *old)
+	}
 	t.instances[bean.Name()] = &bean
 }
 
@@ -88,7 +92,7 @@ func (t *Spring) autoInjection() {
 					}
 
 				} else {
-					log.Printf("%s @autoInjection error: do not exist ref=%s  \n", t.logTag, ref)
+					log.Fatalf("%s @autoInjection error: do not exist ref=%s for bean %s \n", t.logTag, ref, (*ins).Name())
 				}
 			}
 
