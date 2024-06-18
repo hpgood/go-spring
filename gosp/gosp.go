@@ -3,6 +3,7 @@ package gosp
 import (
 	"log"
 	"reflect"
+	"strings"
 )
 
 // Bean
@@ -55,10 +56,11 @@ func (t *Spring) Add(cls interface{}) {
 
 // autoInjection
 func (t *Spring) autoInjection() {
-	for _, ins := range t.instances {
+	for beanName, ins := range t.instances {
 
 		value := reflect.ValueOf(ins)
 		realValue := value.Elem().Elem().Elem()
+
 		reflectType := realValue.Type()
 
 		for i := 0; i < reflectType.NumField(); i++ {
@@ -79,16 +81,36 @@ func (t *Spring) autoInjection() {
 					matchTyped := newPtr.Convert(_type)
 
 					if t.debug {
-						log.Println(t.logTag, "@autoInjection set ref=", ref)
-						log.Println(t.logTag, "@autoInjection set type=", _type)
-						log.Println(t.logTag, "@autoInjection set field.Name=", field.Name)
+						log.Println(t.logTag, "@autoInjection ", beanName, " set ref=", ref)
+						log.Println(t.logTag, "@autoInjection ", beanName, " set type=", _type)
+						log.Println(t.logTag, "@autoInjection ", beanName, " set field.Name=", field.Name)
 					}
 
 					if _field.CanSet() {
 						_field.Set(matchTyped)
 						if t.debug {
-							log.Println(t.logTag, "@autoInjection set   ref=", ref, " success.")
+							log.Println(t.logTag, "@autoInjection ", beanName, " set ref=", ref, " success.")
 						}
+					} else {
+						name := field.Name
+						if len(name) <= 1 {
+							name = "Set" + strings.ToUpper(name)
+						} else {
+							name = "Set" + strings.ToUpper(name[0:1]) + name[1:]
+						}
+						realPtrValue := value.Elem().Elem()
+						_fieldSet := realPtrValue.MethodByName(name)
+						if _fieldSet.IsValid() {
+							_fieldSet.Call([]reflect.Value{newPtr})
+							if t.debug {
+								log.Printf("%s @autoInjection  %s.%s(%s) Success. \n", t.logTag, beanName, name, ref)
+							}
+						} else {
+							if t.debug {
+								log.Println(t.logTag, "@autoInjection ", beanName, " Error: please defind function ", name, "for", reflectType.Name())
+							}
+						}
+
 					}
 
 				} else {
