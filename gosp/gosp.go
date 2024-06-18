@@ -1,6 +1,7 @@
 package gosp
 
 import (
+	"fmt"
 	"log"
 	"reflect"
 	"strings"
@@ -156,9 +157,14 @@ func (t *Spring) autoInjection() {
 								log.Printf("%s @autoInjection  %s.%s(%s) Success. \n", t.logTag, beanName, name, ref)
 							}
 						} else {
-							if t.debug {
-								log.Println(t.logTag, "@autoInjection ", beanName, " Error: please defind function ", name, "for", reflectType.Name())
-							}
+							structName := reflectType.Name()
+							fmt.Printf(`请添加以下代码到结构体%s :
+func (t *%s) %s(arg %s) {
+	t.%s = arg
+}
+`, structName, structName, name, _type, field.Name)
+							log.Fatalln(t.logTag, "@autoInjection ", beanName, " Error: please defind function ", name, "for", structName)
+
 						}
 
 					}
