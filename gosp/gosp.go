@@ -4,21 +4,32 @@ import (
 	"log"
 	"reflect"
 	"strings"
+	"sync"
 )
 
-// Bean
-type Bean interface {
+var locker sync.Mutex
+
+// ModuleBean 拥有依赖注入方法Before()，依赖注入后的处理方法Start()
+type ModuleBean interface {
 	Before()
 	Start()
 	Name() string
 }
 
+// Bean
+type Bean interface {
+	Name() string
+}
+
 // Spring
 type Spring struct {
-	instances map[string]*Bean
-	debug     bool
-	logTag    string
-	inited    bool
+	instances  map[string]*Bean
+	modules    map[string]*ModuleBean
+	debug      bool
+	logTag     string
+	inited     bool
+	beanType   reflect.Type
+	moduleType reflect.Type
 }
 
 func (t *Spring) SetDebug(b bool) {
@@ -27,13 +38,22 @@ func (t *Spring) SetDebug(b bool) {
 
 // init 初始化
 func (t *Spring) init() {
+
+	locker.Lock()
+	defer locker.Unlock()
+
 	if !t.inited {
 		if t.instances == nil {
 			t.instances = make(map[string]*Bean)
 		}
+		if t.modules == nil {
+			t.modules = make(map[string]*ModuleBean)
+		}
 		if t.logTag == "" {
 			t.logTag = "[go-spring] "
 		}
+		t.moduleType = reflect.TypeOf((*ModuleBean)(nil)).Elem()
+		t.beanType = reflect.TypeOf((*Bean)(nil)).Elem()
 		t.inited = true
 	}
 
@@ -43,15 +63,47 @@ func (t *Spring) init() {
 func (t *Spring) Add(cls interface{}) {
 	t.init()
 
-	bean := cls.(Bean)
-	if t.debug {
-		log.Println(t.logTag, "Add bean=", bean.Name())
+	clsType := reflect.TypeOf(cls)
+	isModule := false
+
+	if clsType.Implements(t.moduleType) {
+		module := cls.(ModuleBean)
+		old, ok := t.modules[module.Name()]
+		isModule = true
+		if ok && old != nil {
+			log.Fatalln(t.logTag, " Error: exist old bean=", module.Name(), "old=", *old)
+		}
+		t.modules[module.Name()] = &module
+		if t.debug {
+			log.Println(t.logTag, "Add module/bean=", module.Name())
+		}
+	} else if !clsType.Implements(t.beanType) {
+
+		log.Fatalln(t.logTag, " Error: the struct do not implement the Name() method ,struct=", cls)
 	}
+
+	bean := cls.(Bean)
+
 	old, ok := t.instances[bean.Name()]
 	if ok && old != nil {
 		log.Fatalln(t.logTag, " Error: exist old bean=", bean.Name(), "old=", *old)
 	}
+
 	t.instances[bean.Name()] = &bean
+	if !isModule && t.debug {
+		log.Println(t.logTag, "Add bean=", bean.Name())
+	}
+
+}
+
+// GetModule get bean by name
+func (t *Spring) Get(name string) *Bean {
+	return t.instances[name]
+}
+
+// GetModule get module by name
+func (t *Spring) GetModule(name string) *ModuleBean {
+	return t.modules[name]
 }
 
 // autoInjection
@@ -123,7 +175,7 @@ func (t *Spring) autoInjection() {
 	}
 }
 func (t *Spring) before() {
-	for _, ins := range t.instances {
+	for _, ins := range t.modules {
 		(*ins).Before()
 		if t.debug {
 			log.Printf("%s @before run %s.Before() ok \n", t.logTag, (*ins).Name())
@@ -131,7 +183,7 @@ func (t *Spring) before() {
 	}
 }
 func (t *Spring) start() {
-	for _, ins := range t.instances {
+	for _, ins := range t.modules {
 		(*ins).Start()
 		if t.debug {
 			log.Printf("%s @start run  %s.Start() ok \n", t.logTag, (*ins).Name())
