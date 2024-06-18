@@ -133,15 +133,13 @@ func (t *Spring) autoInjection() {
 					matchTyped := newPtr.Convert(_type)
 
 					if t.debug {
-						log.Println(t.logTag, "@autoInjection ", beanName, " set ref=", ref)
-						log.Println(t.logTag, "@autoInjection ", beanName, " set type=", _type)
-						log.Println(t.logTag, "@autoInjection ", beanName, " set field.Name=", field.Name)
+						log.Println(t.logTag, "@autoInjection ", beanName, "inject name=", field.Name, "ref=", ref, "type=", _type)
 					}
 
 					if _field.CanSet() {
 						_field.Set(matchTyped)
 						if t.debug {
-							log.Println(t.logTag, "@autoInjection ", beanName, " set ref=", ref, " success.")
+							log.Println(t.logTag, "@autoInjection ", beanName, "inject ref=", ref, " success.")
 						}
 					} else {
 						name := field.Name
