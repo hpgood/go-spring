@@ -8,12 +8,15 @@ import (
 	"sync"
 )
 
-var locker sync.Mutex
-
 // ModuleBean 拥有依赖注入方法Before()，依赖注入后的处理方法Start()
 type ModuleBean interface {
 	Before()
 	Start()
+	Name() string
+}
+type SyncModuleBean interface {
+	Before()
+	Start(*sync.WaitGroup)
 	Name() string
 }
 
@@ -24,13 +27,15 @@ type Bean interface {
 
 // Spring
 type Spring struct {
-	instances  map[string]*Bean
-	modules    map[string]*ModuleBean
-	debug      bool
-	logTag     string
-	inited     bool
-	beanType   reflect.Type
-	moduleType reflect.Type
+	instances      map[string]*Bean
+	modules        map[string]*ModuleBean
+	syncModules    map[string]*SyncModuleBean
+	debug          bool
+	logTag         string
+	inited         bool
+	beanType       reflect.Type
+	moduleType     reflect.Type
+	syncModuleType reflect.Type
 }
 
 func (t *Spring) SetDebug(b bool) {
@@ -38,10 +43,7 @@ func (t *Spring) SetDebug(b bool) {
 }
 
 // init 初始化
-func (t *Spring) init() {
-
-	locker.Lock()
-	defer locker.Unlock()
+func (t *Spring) Init() {
 
 	if !t.inited {
 		if t.instances == nil {
@@ -50,11 +52,15 @@ func (t *Spring) init() {
 		if t.modules == nil {
 			t.modules = make(map[string]*ModuleBean)
 		}
+		if t.syncModuleType == nil {
+			t.syncModules = make(map[string]*SyncModuleBean)
+		}
 		if t.logTag == "" {
 			t.logTag = "[go-spring] "
 		}
-		t.moduleType = reflect.TypeOf((*ModuleBean)(nil)).Elem()
 		t.beanType = reflect.TypeOf((*Bean)(nil)).Elem()
+		t.moduleType = reflect.TypeOf((*ModuleBean)(nil)).Elem()
+		t.syncModuleType = reflect.TypeOf((*SyncModuleBean)(nil)).Elem()
 		t.inited = true
 	}
 
@@ -62,7 +68,6 @@ func (t *Spring) init() {
 
 // Add add one been to spring
 func (t *Spring) Add(cls interface{}) {
-	t.init()
 
 	clsType := reflect.TypeOf(cls)
 	isModule := false
@@ -77,6 +82,17 @@ func (t *Spring) Add(cls interface{}) {
 		t.modules[module.Name()] = &module
 		if t.debug {
 			log.Println(t.logTag, "Add module/bean=", module.Name())
+		}
+	} else if clsType.Implements(t.syncModuleType) {
+		syncModule := cls.(SyncModuleBean)
+		old, ok := t.modules[syncModule.Name()]
+		isModule = true
+		if ok && old != nil {
+			log.Fatalln(t.logTag, " Error: exist old bean=", syncModule.Name(), "old=", *old)
+		}
+		t.syncModules[syncModule.Name()] = &syncModule
+		if t.debug {
+			log.Println(t.logTag, "Add syncModule/bean=", syncModule.Name())
 		}
 	} else if !clsType.Implements(t.beanType) {
 
@@ -105,6 +121,11 @@ func (t *Spring) Get(name string) *Bean {
 // GetModule get module by name
 func (t *Spring) GetModule(name string) *ModuleBean {
 	return t.modules[name]
+}
+
+// GetSyncModule get SyncModule by name
+func (t *Spring) GetSyncModule(name string) *SyncModuleBean {
+	return t.syncModules[name]
 }
 
 // autoInjection
@@ -178,13 +199,50 @@ func (t *%s) %s(arg %s) {
 
 	}
 }
+
+func (t *Spring) syncBefore() {
+	if len(t.syncModules) > 0 {
+		wg := &sync.WaitGroup{}
+		for _, ins := range t.syncModules {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				(*ins).Before()
+			}()
+
+			if t.debug {
+				log.Printf("%s @before run %s.Before() ok \n", t.logTag, (*ins).Name())
+			}
+		}
+		wg.Wait()
+	}
+}
 func (t *Spring) before() {
+
 	for _, ins := range t.modules {
 		(*ins).Before()
 		if t.debug {
 			log.Printf("%s @before run %s.Before() ok \n", t.logTag, (*ins).Name())
 		}
 	}
+}
+func (t *Spring) syncStart() {
+
+	if len(t.syncModules) > 0 {
+		wg := &sync.WaitGroup{}
+		for _, ins := range t.syncModules {
+			wg.Add(1)
+			if t.debug {
+				log.Printf("%s [Parallel Function] run %s.Start() \n", t.logTag, (*ins).Name())
+			}
+			(*ins).Start(wg)
+			if t.debug {
+				log.Printf("%s [Parallel Function] finish %s.Start() \n", t.logTag, (*ins).Name())
+			}
+		}
+		wg.Wait()
+	}
+
 }
 func (t *Spring) start() {
 	for _, ins := range t.modules {
@@ -196,9 +254,33 @@ func (t *Spring) start() {
 }
 func (t *Spring) Start() {
 
-	t.init()
-	t.before()
+	wg1 := sync.WaitGroup{}
+	wg1.Add(1)
+	go func() {
+		defer wg1.Done()
+		t.syncBefore()
+	}()
+	wg1.Add(1)
+	go func() {
+		defer wg1.Done()
+		t.before()
+	}()
+	wg1.Wait()
+
 	t.autoInjection()
-	t.start()
+
+	wgStart := sync.WaitGroup{}
+	wgStart.Add(1)
+	go func() {
+		defer wgStart.Done()
+		t.syncStart()
+	}()
+	wgStart.Add(1)
+	go func() {
+		defer wgStart.Done()
+		t.start()
+	}()
+
+	wgStart.Wait()
 
 }
