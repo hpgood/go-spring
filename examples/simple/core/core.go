@@ -11,7 +11,7 @@ type Core struct {
 	Cfg    *infrastruction.Config `bean:"config" `
 }
 
-func (c Core) Name() string {
+func (c Core) BeanName() string {
 	return "core"
 }
 func (c *Core) Before() {
