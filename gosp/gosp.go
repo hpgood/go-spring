@@ -14,17 +14,17 @@ const DefaultContextName = "spring_context"
 type ModuleBean interface {
 	Before()
 	Start()
-	Name() string
+	BeanName() string
 }
 type SyncModuleBean interface {
 	Before()
 	Start(*sync.WaitGroup)
-	Name() string
+	BeanName() string
 }
 
 // Bean
 type Bean interface {
-	Name() string
+	BeanName() string
 }
 
 // Spring
@@ -68,7 +68,7 @@ func (t *contextImpl) GetSyncModule(name string) SyncModuleBean {
 	return t.spring.GetSyncModule(name)
 }
 
-func (t contextImpl) Name() string {
+func (t contextImpl) BeanName() string {
 	return DefaultContextName
 }
 
@@ -137,41 +137,41 @@ func (t *Spring) Add(cls interface{}) {
 
 	if clsType.Implements(t.moduleType) {
 		module := cls.(ModuleBean)
-		old, ok := t.modules[module.Name()]
+		old, ok := t.modules[module.BeanName()]
 		isModule = true
 		if ok && old != nil {
-			log.Fatalln(t.logTag, " Error: exist old bean=", module.Name(), "old=", *old)
+			log.Fatalln(t.logTag, " Error: exist old bean=", module.BeanName(), "old=", *old)
 		}
-		t.modules[module.Name()] = &module
+		t.modules[module.BeanName()] = &module
 		if t.debug {
-			log.Println(t.logTag, "Add module/bean=", module.Name())
+			log.Println(t.logTag, "Add module/bean=", module.BeanName())
 		}
 	} else if clsType.Implements(t.syncModuleType) {
 		syncModule := cls.(SyncModuleBean)
-		old, ok := t.modules[syncModule.Name()]
+		old, ok := t.modules[syncModule.BeanName()]
 		isModule = true
 		if ok && old != nil {
-			log.Fatalln(t.logTag, " Error: exist old bean=", syncModule.Name(), "old=", *old)
+			log.Fatalln(t.logTag, " Error: exist old bean=", syncModule.BeanName(), "old=", *old)
 		}
-		t.syncModules[syncModule.Name()] = &syncModule
+		t.syncModules[syncModule.BeanName()] = &syncModule
 		if t.debug {
-			log.Println(t.logTag, "Add syncModule/bean=", syncModule.Name())
+			log.Println(t.logTag, "Add syncModule/bean=", syncModule.BeanName())
 		}
 	} else if !clsType.Implements(t.beanType) {
 
-		log.Fatalln(t.logTag, " Error: the struct do not implement the Name() method ,struct=", cls)
+		log.Fatalln(t.logTag, " Error: the struct do not implement the BeanName() method ,struct=", cls)
 	}
 
 	bean := cls.(Bean)
 
-	old, ok := t.instances[bean.Name()]
+	old, ok := t.instances[bean.BeanName()]
 	if ok && old != nil {
-		log.Fatalln(t.logTag, " Error: exist old bean=", bean.Name(), "old=", *old)
+		log.Fatalln(t.logTag, " Error: exist old bean=", bean.BeanName(), "old=", *old)
 	}
 
-	t.instances[bean.Name()] = &bean
+	t.instances[bean.BeanName()] = &bean
 	if !isModule && t.debug {
-		log.Println(t.logTag, "Add bean=", bean.Name())
+		log.Println(t.logTag, "Add bean=", bean.BeanName())
 	}
 
 }
@@ -279,7 +279,7 @@ func (t *%s) %s(arg %s) {
 					}
 
 				} else {
-					log.Fatalf("%s @autoInjection error: do not exist ref=%s for bean %s ", t.logTag, ref, (*ins).Name())
+					log.Fatalf("%s @autoInjection error: do not exist ref=%s for bean %s ", t.logTag, ref, (*ins).BeanName())
 				}
 			}
 
@@ -295,7 +295,7 @@ func (t *Spring) syncBefore() {
 		for _, _ins := range t.syncModules {
 
 			ins := *_ins
-			name := ins.Name()
+			name := ins.BeanName()
 			_, ok := t.started.Load(name)
 			if !ok {
 				wg.Add(1)
@@ -304,7 +304,7 @@ func (t *Spring) syncBefore() {
 					ins.Before()
 				}()
 				if t.debug {
-					log.Printf("%s @before run %s.Before() ok ", t.logTag, ins.Name())
+					log.Printf("%s @before run %s.Before() ok ", t.logTag, ins.BeanName())
 				}
 			}
 		}
@@ -316,12 +316,12 @@ func (t *Spring) before() {
 	log := t.logger
 	for _, _ins := range t.modules {
 		ins := *_ins
-		name := ins.Name()
+		name := ins.BeanName()
 		_, ok := t.started.Load(name)
 		if !ok {
 			ins.Before()
 			if t.debug {
-				log.Printf("%s @before run %s.Before() ok ", t.logTag, ins.Name())
+				log.Printf("%s @before run %s.Before() ok ", t.logTag, ins.BeanName())
 			}
 		}
 	}
@@ -333,21 +333,21 @@ func (t *Spring) syncStart() {
 		wg := &sync.WaitGroup{}
 		for _, _ins := range t.syncModules {
 			ins := *_ins
-			name := ins.Name()
+			name := ins.BeanName()
 			_, ok := t.started.Load(name)
 			if !ok {
 				wg.Add(1)
 				if t.debug {
-					log.Printf("%s [Parallel Function] run %s.Start() ", t.logTag, ins.Name())
+					log.Printf("%s [Parallel Function] run %s.Start() ", t.logTag, ins.BeanName())
 				}
 				ins.Start(wg)
 				t.started.Store(name, true)
 				if t.debug {
-					log.Printf("%s [Parallel Function] finish %s.Start() ", t.logTag, ins.Name())
+					log.Printf("%s [Parallel Function] finish %s.Start() ", t.logTag, ins.BeanName())
 				}
 			} else {
 				if t.debug {
-					log.Printf("%s [Parallel Function]  %s.Start() had called before! ", t.logTag, ins.Name())
+					log.Printf("%s [Parallel Function]  %s.Start() had called before! ", t.logTag, ins.BeanName())
 				}
 			}
 
@@ -360,17 +360,17 @@ func (t *Spring) start() {
 	log := t.logger
 	for _, _ins := range t.modules {
 		ins := *_ins
-		name := ins.Name()
+		name := ins.BeanName()
 		_, ok := t.started.Load(name)
 		if !ok {
 			ins.Start()
 			t.started.Store(name, true)
 			if t.debug {
-				log.Printf("%s @start run  %s.Start() ok ", t.logTag, ins.Name())
+				log.Printf("%s @start run  %s.Start() ok ", t.logTag, ins.BeanName())
 			}
 		} else {
 			if t.debug {
-				log.Printf("%s @start  %s.Start() had called before. ", t.logTag, ins.Name())
+				log.Printf("%s @start  %s.Start() had called before. ", t.logTag, ins.BeanName())
 			}
 		}
 	}
