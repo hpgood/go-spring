@@ -20,7 +20,7 @@ func (cfg *Config) Start() {
 
 }
 
-func (cfg Config) Name() string {
+func (cfg Config) BeanName() string {
 
 	return "config"
 }
