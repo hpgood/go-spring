@@ -43,6 +43,7 @@ type Spring struct {
 	lock           sync.Locker
 	ctx            SpringContext
 	count          int
+	once           sync.Once
 }
 
 type SpringContext interface {
@@ -90,46 +91,38 @@ func (t *Spring) SetLogger(logger Logger) {
 // init 初始化
 func (t *Spring) Init() {
 
-	if !t.inited {
-		if t.instances == nil {
-			t.instances = make(map[string]*Bean)
-		}
-		if t.modules == nil {
-			t.modules = make(map[string]*ModuleBean)
-		}
-		if t.syncModuleType == nil {
-			t.syncModules = make(map[string]*SyncModuleBean)
-		}
+	t.once.Do(func() {
 
+		t.instances = make(map[string]*Bean)
+		t.modules = make(map[string]*ModuleBean)
+		t.syncModules = make(map[string]*SyncModuleBean)
 		if t.logger == nil {
 			t.logger = &log.Logger{}
 		}
-		if t.logTag == "" {
-			t.logTag = "[go-spring] "
-		}
-		if t.lock == nil {
-			t.lock = &sync.Mutex{}
-		}
-		if t.ctx == nil {
-			ctx := contextImpl{t}
-			t.ctx = &ctx
-			var bean Bean = &ctx
-			t.instances[DefaultContextName] = &bean
-		}
+		t.logTag = "[go-spring] "
+		t.lock = &sync.Mutex{}
+
+		ctx := contextImpl{t}
+		t.ctx = &ctx
+		var bean Bean = &ctx
+		t.instances[DefaultContextName] = &bean
+
 		t.count = 0
 		t.beanType = reflect.TypeOf((*Bean)(nil)).Elem()
 		t.moduleType = reflect.TypeOf((*ModuleBean)(nil)).Elem()
 		t.syncModuleType = reflect.TypeOf((*SyncModuleBean)(nil)).Elem()
 
 		t.inited = true
-
-		// t.Add(t.ctx)
-	}
+	})
 
 }
 
 // Add add one been to spring
 func (t *Spring) Add(cls interface{}) {
+
+	if !t.inited {
+		t.Init()
+	}
 
 	clsType := reflect.TypeOf(cls)
 	isModule := false
@@ -190,6 +183,9 @@ func GetBean[T any](t SpringContext, name string) (T, error) {
 
 // GetModule get bean by name
 func (t *Spring) Get(name string) Bean {
+	if !t.inited {
+		t.Init()
+	}
 	bean, ok := t.instances[name]
 	if ok && bean != nil {
 		return *bean
@@ -199,6 +195,9 @@ func (t *Spring) Get(name string) Bean {
 
 // GetModule get module by name
 func (t *Spring) GetModule(name string) ModuleBean {
+	if !t.inited {
+		t.Init()
+	}
 	module, ok := t.modules[name]
 	if ok && module != nil {
 		return *module
@@ -208,6 +207,9 @@ func (t *Spring) GetModule(name string) ModuleBean {
 
 // GetSyncModule get SyncModule by name
 func (t *Spring) GetSyncModule(name string) SyncModuleBean {
+	if !t.inited {
+		t.Init()
+	}
 	syncModule, ok := t.syncModules[name]
 	if ok && syncModule != nil {
 		return *syncModule
@@ -219,6 +221,12 @@ func (t *Spring) GetSyncModule(name string) SyncModuleBean {
 func (t *Spring) autoInjection() {
 	log := t.logger
 	for beanName, ins := range t.instances {
+
+		_, ok := t.started.Load(beanName)
+		if ok {
+			// do not inject which is started.
+			continue
+		}
 
 		value := reflect.ValueOf(ins)
 		realValue := value.Elem().Elem().Elem()
@@ -377,6 +385,9 @@ func (t *Spring) start() {
 }
 func (t *Spring) Start() {
 
+	if !t.inited {
+		t.Init()
+	}
 	t.count++
 	if t.debug {
 		t.logger.Printf("%s @Start start count=%d ", t.logTag, t.count)
