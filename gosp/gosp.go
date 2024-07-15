@@ -10,13 +10,6 @@ import (
 
 const DefaultContextName = "spring_context"
 
-// ModuleBean 拥有依赖注入方法Before()，依赖注入后的处理方法Start()
-type ModuleBean interface {
-	Before()
-	Start()
-	BeanName() string
-}
-
 // BeforeBean run Before before inject()
 type BeforeBean interface {
 	Before()
