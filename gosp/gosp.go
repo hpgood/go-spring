@@ -16,8 +16,20 @@ type ModuleBean interface {
 	Start()
 	BeanName() string
 }
-type SyncModuleBean interface {
+
+// BeforeBean run Before before inject()
+type BeforeBean interface {
 	Before()
+	BeanName() string
+}
+
+// BeforeBean run Start after inject()
+type StartBean interface {
+	Start()
+	BeanName() string
+}
+
+type SyncModuleBean interface {
 	Start(*sync.WaitGroup)
 	BeanName() string
 }
@@ -30,14 +42,16 @@ type Bean interface {
 // Spring
 type Spring struct {
 	instances      map[string]*Bean
-	modules        map[string]*ModuleBean
+	startModules   map[string]*StartBean
+	beforeModules  map[string]*BeforeBean
 	syncModules    map[string]*SyncModuleBean
 	started        sync.Map
 	debug          bool
 	logTag         string
 	inited         bool
 	beanType       reflect.Type
-	moduleType     reflect.Type
+	startBeanType  reflect.Type
+	beforeBeanType reflect.Type
 	syncModuleType reflect.Type
 	logger         Logger
 	lock           sync.Locker
@@ -48,7 +62,6 @@ type Spring struct {
 
 type SpringContext interface {
 	Get(name string) Bean
-	GetModule(name string) ModuleBean
 	GetSyncModule(name string) SyncModuleBean
 }
 
@@ -59,10 +72,6 @@ type contextImpl struct {
 func (t *contextImpl) Get(name string) Bean {
 
 	return t.spring.Get(name)
-}
-
-func (t *contextImpl) GetModule(name string) ModuleBean {
-	return t.spring.GetModule(name)
 }
 
 func (t *contextImpl) GetSyncModule(name string) SyncModuleBean {
@@ -94,7 +103,8 @@ func (t *Spring) Init() {
 	t.once.Do(func() {
 
 		t.instances = make(map[string]*Bean)
-		t.modules = make(map[string]*ModuleBean)
+		t.startModules = make(map[string]*StartBean)
+		t.beforeModules = make(map[string]*BeforeBean)
 		t.syncModules = make(map[string]*SyncModuleBean)
 		if t.logger == nil {
 			t.logger = &log.Logger{}
@@ -109,7 +119,8 @@ func (t *Spring) Init() {
 
 		t.count = 0
 		t.beanType = reflect.TypeOf((*Bean)(nil)).Elem()
-		t.moduleType = reflect.TypeOf((*ModuleBean)(nil)).Elem()
+		t.startBeanType = reflect.TypeOf((*StartBean)(nil)).Elem()
+		t.beforeBeanType = reflect.TypeOf((*BeforeBean)(nil)).Elem()
 		t.syncModuleType = reflect.TypeOf((*SyncModuleBean)(nil)).Elem()
 
 		t.inited = true
@@ -120,6 +131,10 @@ func (t *Spring) Init() {
 // Add add one been to spring
 func (t *Spring) Add(cls interface{}) {
 
+	if t == nil {
+		log.Fatalln("Spring@Add this spring is nil!")
+		return
+	}
 	if !t.inited {
 		t.Init()
 	}
@@ -128,20 +143,36 @@ func (t *Spring) Add(cls interface{}) {
 	isModule := false
 	log := t.logger
 
-	if clsType.Implements(t.moduleType) {
-		module := cls.(ModuleBean)
-		old, ok := t.modules[module.BeanName()]
+	// has Start() method
+	if clsType.Implements(t.startBeanType) {
+		module := cls.(StartBean)
+		old, ok := t.startModules[module.BeanName()]
 		isModule = true
 		if ok && old != nil {
 			log.Fatalln(t.logTag, " Error: exist old bean=", module.BeanName(), "old=", *old)
 		}
-		t.modules[module.BeanName()] = &module
+		t.startModules[module.BeanName()] = &module
 		if t.debug {
-			log.Println(t.logTag, "Add module/bean=", module.BeanName())
+			log.Println(t.logTag, "Add startModule=", module.BeanName())
 		}
-	} else if clsType.Implements(t.syncModuleType) {
+	}
+	// has Before() method
+	if clsType.Implements(t.beforeBeanType) {
+		module := cls.(BeforeBean)
+		old, ok := t.beforeModules[module.BeanName()]
+		isModule = true
+		if ok && old != nil {
+			log.Fatalln(t.logTag, " Error: exist old bean=", module.BeanName(), "old=", *old)
+		}
+		t.beforeModules[module.BeanName()] = &module
+		if t.debug {
+			log.Println(t.logTag, "Add beforeModule=", module.BeanName())
+		}
+	}
+	// has Start(*sync.WaitGroup) method
+	if clsType.Implements(t.syncModuleType) {
 		syncModule := cls.(SyncModuleBean)
-		old, ok := t.modules[syncModule.BeanName()]
+		old, ok := t.startModules[syncModule.BeanName()]
 		isModule = true
 		if ok && old != nil {
 			log.Fatalln(t.logTag, " Error: exist old bean=", syncModule.BeanName(), "old=", *old)
@@ -150,11 +181,15 @@ func (t *Spring) Add(cls interface{}) {
 		if t.debug {
 			log.Println(t.logTag, "Add syncModule/bean=", syncModule.BeanName())
 		}
-	} else if !clsType.Implements(t.beanType) {
+	}
+	if !clsType.Implements(t.beanType) {
 
 		log.Fatalln(t.logTag, " Error: the struct do not implement the BeanName() method ,struct=", cls)
 	}
 
+	if reflect.ValueOf(cls).IsNil() {
+		log.Fatalln(t.logTag, " Error: can not Add a nil var to spring! clsType is ", clsType)
+	}
 	bean := cls.(Bean)
 
 	old, ok := t.instances[bean.BeanName()]
@@ -194,11 +229,11 @@ func (t *Spring) Get(name string) Bean {
 }
 
 // GetModule get module by name
-func (t *Spring) GetModule(name string) ModuleBean {
+func (t *Spring) GetStartModule(name string) StartBean {
 	if !t.inited {
 		t.Init()
 	}
-	module, ok := t.modules[name]
+	module, ok := t.startModules[name]
 	if ok && module != nil {
 		return *module
 	}
@@ -296,33 +331,10 @@ func (t *%s) %s(arg %s) {
 	}
 }
 
-func (t *Spring) syncBefore() {
-	log := t.logger
-	if len(t.syncModules) > 0 {
-		wg := &sync.WaitGroup{}
-		for _, _ins := range t.syncModules {
-
-			ins := *_ins
-			name := ins.BeanName()
-			_, ok := t.started.Load(name)
-			if !ok {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					ins.Before()
-				}()
-				if t.debug {
-					log.Printf("%s @before run %s.Before() ok ", t.logTag, ins.BeanName())
-				}
-			}
-		}
-		wg.Wait()
-	}
-}
 func (t *Spring) before() {
 
 	log := t.logger
-	for _, _ins := range t.modules {
+	for _, _ins := range t.beforeModules {
 		ins := *_ins
 		name := ins.BeanName()
 		_, ok := t.started.Load(name)
@@ -366,7 +378,7 @@ func (t *Spring) syncStart() {
 }
 func (t *Spring) start() {
 	log := t.logger
-	for _, _ins := range t.modules {
+	for _, _ins := range t.startModules {
 		ins := *_ins
 		name := ins.BeanName()
 		_, ok := t.started.Load(name)
@@ -395,19 +407,7 @@ func (t *Spring) Start() {
 	t.lock.Lock()
 	defer t.lock.Unlock()
 
-	wgBefore := sync.WaitGroup{}
-	wgBefore.Add(1)
-	go func() {
-		defer wgBefore.Done()
-		t.syncBefore()
-	}()
-	wgBefore.Add(1)
-	go func() {
-		defer wgBefore.Done()
-		t.before()
-	}()
-	wgBefore.Wait()
-
+	t.before()
 	t.autoInjection()
 
 	wgStart := sync.WaitGroup{}
