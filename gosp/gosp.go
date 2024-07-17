@@ -39,6 +39,7 @@ type Spring struct {
 	startModules   map[string]*StartBean
 	beforeModules  map[string]*BeforeBean
 	syncModules    map[string]*SyncModuleBean
+	methodMap      map[string]*BeanMap
 	started        sync.Map
 	debug          bool
 	logTag         string
@@ -89,6 +90,17 @@ type Logger interface {
 	Fatalf(string, ...interface{})
 }
 
+type BeanMethod struct {
+	Method   string
+	Index    int
+	IsSetter bool
+	Arg      reflect.Value
+}
+type BeanMap struct {
+	TypeName string
+	Methods  []BeanMethod
+}
+
 func (t *Spring) SetDebug(b bool) {
 	t.debug = b
 }
@@ -106,6 +118,7 @@ func (t *Spring) Init() {
 		t.startModules = make(map[string]*StartBean)
 		t.beforeModules = make(map[string]*BeforeBean)
 		t.syncModules = make(map[string]*SyncModuleBean)
+		t.methodMap = make(map[string]*BeanMap)
 		if t.logger == nil {
 			t.logger = &log.Logger{}
 		}
@@ -276,14 +289,29 @@ func (t *Spring) autoInjection() {
 // CreateInstance 创建实例,并依赖
 func (t *Spring) CreateInstance(ins interface{}) (interface{}, error) {
 
-	typeName := reflect.ValueOf(ins).Elem().Type().String()
 	t.instanceCount++
-	name := fmt.Sprintf("%s_instance_%d", typeName, t.instanceCount)
+
 	if reflect.ValueOf(ins).IsNil() {
-		return ins, fmt.Errorf("%s @Create Error:the instance(%s) is nil", t.logTag, name)
+		typeName := reflect.ValueOf(ins).Type().String()
+		return ins, fmt.Errorf("%s @Create Error:the instance(%s) is nil", t.logTag, typeName)
+	}
+	// get the mapper of method
+	beanMap, err := t.getMethodMapper(ins)
+	if err != nil {
+		return ins, err
+	}
+	ptr := reflect.ValueOf(ins)
+	for _, m := range beanMap.Methods {
+		if m.IsSetter {
+			_fieldSet := ptr.Method(m.Index)
+			_fieldSet.Call([]reflect.Value{m.Arg})
+		} else {
+			_field := ptr.Field(m.Index)
+			_field.Set(m.Arg)
+		}
 	}
 
-	return ins, t.injection(name, ins, false)
+	return ins, nil
 }
 
 // Import 存放已经依赖好的实例
@@ -300,6 +328,120 @@ func (t *Spring) checkError(msg string, throw bool) error {
 	} else {
 		return errors.New(msg)
 	}
+}
+
+// getMethodMapper  get the mapper of struct
+func (t *Spring) getMethodMapper(ins interface{}) (*BeanMap, error) {
+
+	insType := reflect.TypeOf(ins).Elem()
+	typeName := fmt.Sprintf("%s/%s", insType.PkgPath(), insType.Name())
+
+	method, ok := t.methodMap[typeName]
+	if ok {
+		return method, nil
+	}
+	m := BeanMap{}
+
+	{
+		log := t.logger
+		value := reflect.ValueOf(ins)
+		realPtrValue := value
+		realValue := value.Elem()
+		maxLevel := 10
+		beanName := typeName
+		throw := false
+		// interface{} , ptr ,struct
+		{ //find the struct
+			for level := 0; level < maxLevel && realValue.Kind() != reflect.Struct; level++ {
+				realPtrValue = realValue
+				realValue = realValue.Elem()
+			}
+		}
+
+		methodToIndex := make(map[string]int)
+		typ := reflect.TypeOf(ins)
+
+		for i := 0; i < typ.NumMethod(); i++ {
+			method := typ.Method(i)
+			methodToIndex[method.Name] = i
+		}
+
+		reflectType := realValue.Type()
+
+		for i := 0; i < reflectType.NumField(); i++ {
+
+			field := reflectType.Field(i)
+
+			ref := field.Tag.Get("bean")
+			if ref != "" {
+
+				tmp, ok := t.instances[ref]
+				if ok {
+
+					_field := realValue.FieldByName(field.Name)
+
+					_type := _field.Type()
+
+					newPtr := reflect.ValueOf(*tmp)
+					matchTyped := newPtr.Convert(_type)
+
+					if t.debug {
+						log.Println(t.logTag, "@getMethodMap ", beanName, "inject name=", field.Name, "ref=", ref, "type=", _type)
+					}
+
+					if _field.CanSet() {
+
+						method := BeanMethod{}
+						method.Arg = matchTyped
+						method.Method = field.Name
+						method.Index = i
+						method.IsSetter = false
+						m.Methods = append(m.Methods, method)
+
+					} else {
+						name := field.Name
+						if len(name) <= 1 {
+							name = "Set" + strings.ToUpper(name)
+						} else {
+							name = "Set" + strings.ToUpper(name[0:1]) + name[1:]
+						}
+						_fieldSet := realPtrValue.MethodByName(name)
+						if _fieldSet.IsValid() {
+
+							method := BeanMethod{}
+							method.Arg = newPtr
+							method.Method = name
+							method.Index = methodToIndex[name]
+							method.IsSetter = true
+
+							m.Methods = append(m.Methods, method)
+
+						} else {
+							structName := reflectType.Name()
+							fmt.Printf(`请添加以下代码到结构体%s :
+func (t *%s) %s(arg %s) {
+t.%s = arg
+}
+`, structName, structName, name, _type, field.Name)
+
+							msg := fmt.Sprint(t.logTag, "@getMethodMap ", beanName, " Error: please defind function ", name, " for ", structName)
+							return nil, t.checkError(msg, throw)
+
+						}
+					}
+
+				} else {
+					msg := fmt.Sprintf("%s @autoInjection error: do not exist ref=%s for bean %s ", t.logTag, ref, beanName)
+					return nil, t.checkError(msg, throw)
+				}
+			}
+
+		}
+	}
+
+	t.methodMap[typeName] = &m
+	return &m, nil
+
 }
 
 // Injection 依赖注入
@@ -353,16 +495,6 @@ func (t *Spring) injection(beanName string, ins interface{}, throw bool) error {
 					} else {
 						name = "Set" + strings.ToUpper(name[0:1]) + name[1:]
 					}
-					// realPtrValue := value
-
-					// { //find the ptr
-					// 	t.logger.Printf("@autoInjection name:%s kind:%s", beanName, realPtrValue.Kind())
-					// 	for level := 0; level < maxLevel && realPtrValue.Kind() != reflect.Ptr; level++ {
-					// 		realPtrValue = realPtrValue.Elem()
-					// 		t.logger.Printf("@autoInjection name:%s %d kind:%s", beanName, level, realPtrValue.Kind())
-					// 	}
-					// }
-
 					_fieldSet := realPtrValue.MethodByName(name)
 					if _fieldSet.IsValid() {
 						_fieldSet.Call([]reflect.Value{newPtr})
