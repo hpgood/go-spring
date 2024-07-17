@@ -1,6 +1,7 @@
 package gosp
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"reflect"
@@ -51,10 +52,12 @@ type Spring struct {
 	ctx            SpringContext
 	count          int
 	once           sync.Once
+	instanceCount  int
 }
 
 type SpringContext interface {
 	Get(name string) Bean
+	CreateInstance(ins interface{}) (interface{}, error)
 	GetSyncModule(name string) SyncModuleBean
 }
 
@@ -65,6 +68,10 @@ type contextImpl struct {
 func (t *contextImpl) Get(name string) Bean {
 
 	return t.spring.Get(name)
+}
+
+func (t *contextImpl) CreateInstance(ins interface{}) (interface{}, error) {
+	return t.spring.CreateInstance(ins)
 }
 
 func (t *contextImpl) GetSyncModule(name string) SyncModuleBean {
@@ -142,7 +149,7 @@ func (t *Spring) Add(cls interface{}) {
 		old, ok := t.startModules[module.BeanName()]
 		isModule = true
 		if ok && old != nil {
-			log.Fatalln(t.logTag, " Error: exist old bean=", module.BeanName(), "old=", *old)
+			log.Fatalln(t.logTag, " Error: startModule exist old bean=", module.BeanName(), "old=", *old)
 		}
 		t.startModules[module.BeanName()] = &module
 		if t.debug {
@@ -155,7 +162,7 @@ func (t *Spring) Add(cls interface{}) {
 		old, ok := t.beforeModules[module.BeanName()]
 		isModule = true
 		if ok && old != nil {
-			log.Fatalln(t.logTag, " Error: exist old bean=", module.BeanName(), "old=", *old)
+			log.Fatalln(t.logTag, " Error: beforeModules exist old bean=", module.BeanName(), "old=", *old)
 		}
 		t.beforeModules[module.BeanName()] = &module
 		if t.debug {
@@ -168,7 +175,7 @@ func (t *Spring) Add(cls interface{}) {
 		old, ok := t.startModules[syncModule.BeanName()]
 		isModule = true
 		if ok && old != nil {
-			log.Fatalln(t.logTag, " Error: exist old bean=", syncModule.BeanName(), "old=", *old)
+			log.Fatalln(t.logTag, " Error: syncModule exist old bean=", syncModule.BeanName(), "old=", *old)
 		}
 		t.syncModules[syncModule.BeanName()] = &syncModule
 		if t.debug {
@@ -209,6 +216,11 @@ func GetBean[T any](t SpringContext, name string) (T, error) {
 	return null, fmt.Errorf("the bean named '%s' do not exist", name)
 }
 
+func CreateInstance[T any](t SpringContext, ins T) (T, error) {
+	_, err := t.CreateInstance(ins)
+	return ins, err
+}
+
 // GetModule get bean by name
 func (t *Spring) Get(name string) Bean {
 	if !t.inited {
@@ -247,7 +259,7 @@ func (t *Spring) GetSyncModule(name string) SyncModuleBean {
 
 // autoInjection
 func (t *Spring) autoInjection() {
-	log := t.logger
+	// log := t.logger
 	for beanName, ins := range t.instances {
 
 		_, ok := t.started.Load(beanName)
@@ -256,72 +268,129 @@ func (t *Spring) autoInjection() {
 			continue
 		}
 
-		value := reflect.ValueOf(ins)
-		realValue := value.Elem().Elem().Elem()
+		t.injection(beanName, ins, true)
 
-		reflectType := realValue.Type()
+	}
+}
 
-		for i := 0; i < reflectType.NumField(); i++ {
+// CreateInstance 创建实例,并依赖
+func (t *Spring) CreateInstance(ins interface{}) (interface{}, error) {
 
-			field := reflectType.Field(i)
+	typeName := reflect.ValueOf(ins).Elem().Type().String()
+	t.instanceCount++
+	name := fmt.Sprintf("%s_instance_%d", typeName, t.instanceCount)
+	if reflect.ValueOf(ins).IsNil() {
+		return ins, fmt.Errorf("%s @Create Error:the instance(%s) is nil", t.logTag, name)
+	}
 
-			ref := field.Tag.Get("bean")
-			if ref != "" {
+	return ins, t.injection(name, ins, false)
+}
 
-				tmp, ok := t.instances[ref]
-				if ok {
+// Import 存放已经依赖好的实例
+func (t *Spring) Import(ins Bean) error {
+	t.instances[ins.BeanName()] = &ins
+	return nil
+}
 
-					_field := realValue.FieldByName(field.Name)
+// checkError 检查错误,是否抛出异常
+func (t *Spring) checkError(msg string, throw bool) error {
+	if throw {
+		t.logger.Fatalln(msg)
+		return nil
+	} else {
+		return errors.New(msg)
+	}
+}
 
-					_type := _field.Type()
+// Injection 依赖注入
+func (t *Spring) injection(beanName string, ins interface{}, throw bool) error {
 
-					newPtr := reflect.ValueOf(*tmp)
-					matchTyped := newPtr.Convert(_type)
+	log := t.logger
+	value := reflect.ValueOf(ins)
+	realPtrValue := value
+	realValue := value.Elem()
+	maxLevel := 10
+	// interface{} , ptr ,struct
+	{ //find the struct
+		for level := 0; level < maxLevel && realValue.Kind() != reflect.Struct; level++ {
+			realPtrValue = realValue
+			realValue = realValue.Elem()
+		}
+	}
 
+	reflectType := realValue.Type()
+
+	for i := 0; i < reflectType.NumField(); i++ {
+
+		field := reflectType.Field(i)
+
+		ref := field.Tag.Get("bean")
+		if ref != "" {
+
+			tmp, ok := t.instances[ref]
+			if ok {
+
+				_field := realValue.FieldByName(field.Name)
+
+				_type := _field.Type()
+
+				newPtr := reflect.ValueOf(*tmp)
+				matchTyped := newPtr.Convert(_type)
+
+				if t.debug {
+					log.Println(t.logTag, "@autoInjection ", beanName, "inject name=", field.Name, "ref=", ref, "type=", _type)
+				}
+
+				if _field.CanSet() {
+					_field.Set(matchTyped)
 					if t.debug {
-						log.Println(t.logTag, "@autoInjection ", beanName, "inject name=", field.Name, "ref=", ref, "type=", _type)
+						log.Println(t.logTag, "@autoInjection ", beanName, "inject ref=", ref, " success.")
 					}
+				} else {
+					name := field.Name
+					if len(name) <= 1 {
+						name = "Set" + strings.ToUpper(name)
+					} else {
+						name = "Set" + strings.ToUpper(name[0:1]) + name[1:]
+					}
+					// realPtrValue := value
 
-					if _field.CanSet() {
-						_field.Set(matchTyped)
+					// { //find the ptr
+					// 	t.logger.Printf("@autoInjection name:%s kind:%s", beanName, realPtrValue.Kind())
+					// 	for level := 0; level < maxLevel && realPtrValue.Kind() != reflect.Ptr; level++ {
+					// 		realPtrValue = realPtrValue.Elem()
+					// 		t.logger.Printf("@autoInjection name:%s %d kind:%s", beanName, level, realPtrValue.Kind())
+					// 	}
+					// }
+
+					_fieldSet := realPtrValue.MethodByName(name)
+					if _fieldSet.IsValid() {
+						_fieldSet.Call([]reflect.Value{newPtr})
 						if t.debug {
-							log.Println(t.logTag, "@autoInjection ", beanName, "inject ref=", ref, " success.")
+							log.Printf("%s @autoInjection  %s.%s(%s) Success. ", t.logTag, beanName, name, ref)
 						}
 					} else {
-						name := field.Name
-						if len(name) <= 1 {
-							name = "Set" + strings.ToUpper(name)
-						} else {
-							name = "Set" + strings.ToUpper(name[0:1]) + name[1:]
-						}
-						realPtrValue := value.Elem().Elem()
-						_fieldSet := realPtrValue.MethodByName(name)
-						if _fieldSet.IsValid() {
-							_fieldSet.Call([]reflect.Value{newPtr})
-							if t.debug {
-								log.Printf("%s @autoInjection  %s.%s(%s) Success. ", t.logTag, beanName, name, ref)
-							}
-						} else {
-							structName := reflectType.Name()
-							fmt.Printf(`请添加以下代码到结构体%s :
+						structName := reflectType.Name()
+						fmt.Printf(`请添加以下代码到结构体%s :
 func (t *%s) %s(arg %s) {
-	t.%s = arg
+t.%s = arg
 }
 `, structName, structName, name, _type, field.Name)
-							log.Fatalln(t.logTag, "@autoInjection ", beanName, " Error: please defind function ", name, "for", structName)
 
-						}
+						msg := fmt.Sprint(t.logTag, "@autoInjection ", beanName, " Error: please defind function ", name, " for ", structName)
+						return t.checkError(msg, throw)
 
 					}
-
-				} else {
-					log.Fatalf("%s @autoInjection error: do not exist ref=%s for bean %s ", t.logTag, ref, (*ins).BeanName())
 				}
-			}
 
+			} else {
+				msg := fmt.Sprintf("%s @autoInjection error: do not exist ref=%s for bean %s ", t.logTag, ref, beanName)
+				return t.checkError(msg, throw)
+			}
 		}
 
 	}
+	return nil
 }
 
 func (t *Spring) before() {
@@ -367,7 +436,6 @@ func (t *Spring) syncStart() {
 		}
 		wg.Wait()
 	}
-
 }
 func (t *Spring) start() {
 	log := t.logger
@@ -388,6 +456,13 @@ func (t *Spring) start() {
 		}
 	}
 }
+
+// 上下文
+func (t *Spring) GetContext() SpringContext {
+	return t.ctx
+}
+
+// Start run
 func (t *Spring) Start() {
 
 	if !t.inited {
